@@ -1,0 +1,66 @@
+import matplotlib.pyplot as plt
+import numpy as np
+import torch
+
+def plot_multiple_plays_continuous_debug(
+    model, val_loader, device,
+    pos_scaler, delta_scaler,
+    player_side_embedding, player_position_embedding, player_role_embedding,
+    n_plays=3
+):
+    model.eval()
+    plays_plotted = 0
+
+    for X_batch, Y_batch, side_idx, pos_idx, role_idx in val_loader:
+        X_batch = X_batch.to(device)
+        Y_batch = Y_batch.to(device)
+        side_idx = side_idx.to(device)
+        pos_idx = pos_idx.to(device)
+        role_idx = role_idx.to(device)
+
+        with torch.no_grad():
+            side_emb = player_side_embedding(side_idx)
+            pos_emb = player_position_embedding(pos_idx)
+            role_emb = player_role_embedding(role_idx)
+            X_input = torch.cat([X_batch, side_emb, pos_emb, role_emb], dim=-1)
+            Y_pred = model(X_input)
+
+        batch_size = X_batch.size(0)
+
+        for i in range(batch_size):
+            if plays_plotted >= n_plays:
+                return
+
+            if torch.allclose(Y_batch[i], torch.zeros_like(Y_batch[i])):
+                continue
+
+            # inverse scale input and deltas
+            x_input = pos_scaler.inverse_transform(X_batch[i, :, :2].cpu().numpy())
+            y_true_deltas = delta_scaler.inverse_transform(Y_batch[i].cpu().numpy())
+            y_pred_deltas = delta_scaler.inverse_transform(Y_pred[i].cpu().numpy())
+
+            print(f"\nPlay {plays_plotted + 1} — first 5 X deltas (true vs pred):")
+            print("True:", np.round(y_true_deltas[:5, 0], 3))
+            print("Pred:", np.round(y_pred_deltas[:5, 0], 3))
+
+            # Reconstruct absolute positions
+            last_pos = x_input[-1].copy()
+            y_true_pos = np.vstack([last_pos, np.cumsum(y_true_deltas, axis=0) + last_pos])
+            y_pred_pos = np.vstack([last_pos, np.cumsum(y_pred_deltas, axis=0) + last_pos])
+
+            # Plotting
+            plt.figure(figsize=(12, 6))
+            plt.plot(x_input[:, 0], x_input[:, 1], 'bo-', alpha=0.6, label='Input (past)')
+            plt.plot(y_true_pos[:, 0], y_true_pos[:, 1], 'go-', alpha=0.8, label='True future')
+            plt.plot(y_pred_pos[:, 0], y_pred_pos[:, 1], 'ro--', alpha=0.8, label='Predicted future')
+            plt.xlim(0, 120)
+            plt.ylim(0, 53.3)
+            plt.gca().set_aspect('equal', adjustable='box')
+            plt.xlabel('X (yards)')
+            plt.ylabel('Y (yards)')
+            plt.title(f'Play {plays_plotted + 1}')
+            plt.legend()
+            plt.grid(True)
+            plt.show()
+
+            plays_plotted += 1
