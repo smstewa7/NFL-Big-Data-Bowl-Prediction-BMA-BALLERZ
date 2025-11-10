@@ -1,0 +1,99 @@
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader
+
+# Import our modules
+from data_loader import load_nfl_data
+from dataset import NFLPlayDataset
+from model import BasicTransformer
+from train import train_transformer
+from evaluate import plot_multiple_plays_continuous_debug
+
+def main():
+    # Configuration
+    INPUT_FEATURES = ['x', 'y', 's', 'a', 'dir_sin', 'dir_cos', 'o_sin', 'o_cos', 'absolute_yardline_number', 'ball_land_x','ball_land_y']
+    TARGET_FEATURES = ["delta_x", "delta_y"]
+    
+    # Load data
+    try:
+        (df_input_train, df_target_train,
+         df_input_val, df_target_val, 
+         pos_scaler, delta_scaler, 
+         positions, roles) = load_nfl_data(data_dir='../Data', week_end=2)
+
+        print("Data loaded successfully!")
+        print(f"Training features shape: {df_input_train.shape}")
+        print(f"Training targets shape: {df_target_train.shape}")
+        print(f"Validation features shape: {df_input_val.shape}")
+        print(f"Validation targets shape: {df_target_val.shape}")
+
+    except Exception as e:
+        print(f"Error loading data: {e}")
+        return
+
+    # Create embeddings
+    player_side_embedding = nn.Embedding(2, 2)
+    player_position_embedding = nn.Embedding(len(positions), 8)
+    player_role_embedding = nn.Embedding(len(roles), 2)
+
+    # Create datasets
+    train_dataset = NFLPlayDataset(
+        df_input_train, df_target_train,
+        input_features=INPUT_FEATURES,
+        target_features=TARGET_FEATURES,
+        player_side_embedding=player_side_embedding,
+        player_position_embedding=player_position_embedding,
+        player_role_embedding=player_role_embedding
+    )
+
+    val_dataset = NFLPlayDataset(
+        df_input_val, df_target_val,
+        input_features=INPUT_FEATURES,
+        target_features=TARGET_FEATURES,
+        player_side_embedding=player_side_embedding,
+        player_position_embedding=player_position_embedding,
+        player_role_embedding=player_role_embedding
+    )
+
+    # Create data loaders
+    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)
+
+    # Calculate total input features
+    side_emb_dim = player_side_embedding.embedding_dim
+    pos_emb_dim = player_position_embedding.embedding_dim
+    role_emb_dim = player_role_embedding.embedding_dim
+    total_input_features = len(INPUT_FEATURES) + side_emb_dim + pos_emb_dim + role_emb_dim
+
+    # Create model
+    model = BasicTransformer(
+        input_features=total_input_features,
+        output_features=2,
+        d_model=128,
+        nhead=8,
+        num_layers=4,
+    )
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.to(device)
+
+    print(f"Total input features: {total_input_features}")
+    print(f"Continuous: {len(INPUT_FEATURES)}, Side: {side_emb_dim}, Pos: {pos_emb_dim}, Role: {role_emb_dim}")
+
+    # Train model
+    train_transformer(
+        model, train_loader, val_loader, delta_scaler,
+        player_side_embedding, player_position_embedding, player_role_embedding,
+        n_epochs=20, lr=1e-3, device=device
+    )
+
+    # Evaluate model
+    plot_multiple_plays_continuous_debug(
+        model, val_loader, device,
+        pos_scaler, delta_scaler,
+        player_side_embedding, player_position_embedding, player_role_embedding,
+        n_plays=10
+    )
+
+if __name__ == "__main__":
+    main()
